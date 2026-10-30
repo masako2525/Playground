@@ -118,6 +118,7 @@ const TERRAINS = {
   mountain: { name: "険しい山",   color: "#6c757d", icon: "⛰️", cost: 30 }, // 旧15 -> 30
   port:     { name: "出発港",     color: "#1d3557", icon: "⚓", cost: 0 },
   village:  { name: "原住民集落", color: "#b56576", icon: "🏕️", cost: 0 },
+  question: { name: "謎の地点",   color: "#7b2cbf", icon: "❓", cost: 4 },
   goal:     { name: "帰還気球",   color: "#ca6702", icon: "🎈", cost: 0 }
 };
 
@@ -137,35 +138,46 @@ const ITEMS = [
 // ============================================================================
 // [MODULE 2] ゲーム状態管理 ＆ ランダム島生成ロジック
 // ============================================================================
-let state = { expNum: 1, cash: 500, san: 100, maxSan: 100, px: 1, py: 5, grid: [] };
+let state = {
+  expNum: 1, cash: 500, san: 100, maxSan: 100, px: 1, py: 5, grid: [],
+  selectedDestination: null, routePath: [], routeCost: 0
+};
 
 function generateIsland() {
   state.px = 1; state.py = 5; state.san = state.maxSan;
+  state.selectedDestination = null; state.routePath = []; state.routeCost = 0;
   state.grid = [];
   for (let r = 0; r < ROWS; r++) {
     state.grid[r] = [];
     for (let c = 0; c < COLS; c++) {
       let rand = Math.random();
       let type = rand < 0.45 ? 'plain' : (rand < 0.75 ? 'forest' : (rand < 0.90 ? 'swamp' : 'mountain'));
-      state.grid[r][c] = { type: type, visited: false, villageData: null };
+      state.grid[r][c] = { type: type, visited: false, villageData: null, questionUsed: false, eventType: null };
     }
   }
   state.grid[5][1].type = 'port';
 
-  // 24列の広大なマップに合わせて、6つの集落をゾーンごとに点在させる
+  // 村は1つだけ。中盤のどこかに現れるため、ゴールまでの道筋を毎回探す
   const vTemplates = [
-    { cMin: 4,  cMax: 6,  name: "西部の森の集落",   specialty: 'spice', demand: 'med' },
-    { cMin: 7,  cMax: 9,  name: "前線の開拓集落",   specialty: 'spice', demand: 'tool' },
-    { cMin: 10, cMax: 12, name: "中央湿地の部族",   specialty: 'jade',  demand: 'med' },
-    { cMin: 13, cMax: 15, name: "渓谷の翡翠の里",   specialty: 'jade',  demand: 'cloth' },
-    { cMin: 16, cMax: 18, name: "深部の隠れ里",     specialty: 'relic', demand: 'tool' },
-    { cMin: 19, cMax: 20, name: "古代遺跡の守り人", specialty: 'relic', demand: 'cloth' }
+    { cMin: 10, cMax: 16, name: "島の中央交易集落", specialty: 'jade', demand: 'tool' }
   ];
   vTemplates.forEach(t => {
     let c = t.cMin + Math.floor(Math.random() * (t.cMax - t.cMin + 1));
     let r = 1 + Math.floor(Math.random() * (ROWS - 2));
     state.grid[r][c].type = 'village';
     state.grid[r][c].villageData = { name: t.name, specialty: t.specialty, demand: t.demand };
+  });
+
+  // 未踏の探索を促すハテナマス。港・村・ゴールとは重ならない場所に配置する
+  const questionEvents = ['villageReveal', 'tradeItem', 'villageReveal', 'tradeItem', 'villageReveal', 'tradeItem'];
+  questionEvents.forEach(eventType => {
+    let c, r;
+    do {
+      c = 2 + Math.floor(Math.random() * 20);
+      r = 1 + Math.floor(Math.random() * (ROWS - 2));
+    } while (state.grid[r][c].type === 'port' || state.grid[r][c].type === 'village' || state.grid[r][c].type === 'question');
+    state.grid[r][c].type = 'question';
+    state.grid[r][c].eventType = eventType;
   });
 
   // 最東端（22列目）にゴール（帰還気球）を配置
@@ -287,6 +299,79 @@ function updateVision() {
     }
   }
 }
+
+function findShortestPath(targetC, targetR) {
+  if (!state.grid[targetR][targetC].visited) return null;
+
+  let distance = Array.from({ length: ROWS }, () => Array(COLS).fill(Infinity));
+  let previous = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  let remaining = [];
+  distance[state.py][state.px] = 0;
+  remaining.push({ c: state.px, r: state.py });
+
+  while (remaining.length > 0) {
+    remaining.sort((a, b) => distance[a.r][a.c] - distance[b.r][b.c]);
+    let current = remaining.shift();
+    let currentDistance = distance[current.r][current.c];
+    if (current.c === targetC && current.r === targetR) break;
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (!state.grid[r][c].visited || !isAdjacent(current.c, current.r, c, r)) continue;
+        let cost = currentDistance + TERRAINS[state.grid[r][c].type].cost;
+        if (cost < distance[r][c]) {
+          distance[r][c] = cost;
+          previous[r][c] = current;
+          remaining.push({ c, r });
+        }
+      }
+    }
+  }
+
+  if (!Number.isFinite(distance[targetR][targetC])) return null;
+  let path = [];
+  let cursor = { c: targetC, r: targetR };
+  while (cursor) {
+    path.unshift(cursor);
+    if (cursor.c === state.px && cursor.r === state.py) break;
+    cursor = previous[cursor.r][cursor.c];
+  }
+  return { path, ...getRouteCost(path) };
+}
+
+function getRouteCost(path) {
+  let steps = path.length - 1;
+  let baseCost = path.slice(1).reduce((total, point) => {
+    return total + TERRAINS[state.grid[point.r][point.c].type].cost;
+  }, 0);
+  let discount = steps >= 2 ? Math.floor((steps - 1) * (1 + steps / 10)) : 0;
+  return {
+    steps,
+    baseCost,
+    discount,
+    cost: Math.max(1, baseCost - discount)
+  };
+}
+
+function triggerQuestionEvent(cell) {
+  if (cell.questionUsed) return "❓ ここにはもう何も残っていない。";
+  cell.questionUsed = true;
+
+  if (cell.eventType === 'villageReveal') {
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (state.grid[r][c].type === 'village') state.grid[r][c].visited = true;
+      }
+    }
+    return "❓ 古い地図を発見した！🏕️ 村の位置がマップに記された。";
+  }
+
+  let tradeItems = ITEMS.filter(item => item.type === 'city' || item.type === 'local');
+  let item = tradeItems[Math.floor(Math.random() * tradeItems.length)];
+  item.owned++;
+  return `❓ 遺された交易品を発見した！${item.name}を1個手に入れた。`;
+}
+
 function drawHex(x, y, radius, fill, stroke, lineWidth = 2) {
   ctx.beginPath();
   for (let i = 0; i < 6; i++) {
@@ -314,8 +399,12 @@ function render() {
         ctx.font = "11px sans-serif"; ctx.fillStyle = "#555"; ctx.fillText("☁️", x, y);
         continue;
       }
-      let t = TERRAINS[cell.type];
+      let t = cell.type === 'question' && cell.questionUsed ? TERRAINS.plain : TERRAINS[cell.type];
       drawHex(x, y, HEX_R - 1, t.color, adj ? "#e9c46a" : "#1e1b18", adj ? 2.5 : 1.5);
+      let onRoute = state.routePath.some(point => point.c === c && point.r === r);
+      if (onRoute) {
+        drawHex(x, y, HEX_R + 1, "rgba(0,0,0,0)", pointMatchesDestination(c, r) ? "#ffba08" : "#f4a261", pointMatchesDestination(c, r) ? 4 : 2);
+      }
       if (t.icon) { ctx.font = "16px sans-serif"; ctx.fillText(t.icon, x, y - 3); }
       if (cell.type === 'village' && cell.villageData) {
         let spIcon = ITEMS.find(i => i.id === cell.villageData.specialty).name.slice(0, 2);
@@ -355,6 +444,55 @@ function render() {
   }
 }
 
+function pointMatchesDestination(c, r) {
+  return state.selectedDestination && state.selectedDestination.c === c && state.selectedDestination.r === r;
+}
+
+function moveAlongRoute(path, cost) {
+  if (cost > state.san) {
+    document.getElementById('log-bar').innerText = `💬 その経路にはSANが足りない（必要:${cost} / 残り:${state.san}）。`;
+    return;
+  }
+
+  state.routePath = [];
+  state.selectedDestination = null;
+  let traveledPath = [path[0]];
+  for (let i = 1; i < path.length; i++) {
+    state.px = path[i].c;
+    state.py = path[i].r;
+    traveledPath.push(path[i]);
+    let cell = state.grid[state.py][state.px];
+    if (cell.type === 'goal' || cell.type === 'port' || cell.type === 'village') break;
+  }
+  let actualRoute = getRouteCost(traveledPath);
+  state.san = Math.max(0, state.san - actualRoute.cost);
+  updateVision();
+  let cell = state.grid[state.py][state.px];
+  if (state.san <= 0) {
+    render();
+    document.getElementById('log-bar').innerHTML = "💀 <b style='color:#e63946'>正気度(SAN)が尽き、調査隊は未開の密林へ消えた… (F5で最初から再挑戦)</b>";
+    return;
+  }
+  for (let point of traveledPath.slice(1)) {
+    let passedCell = state.grid[point.r][point.c];
+    if (passedCell.type === 'question') triggerQuestionEvent(passedCell);
+  }
+  if (cell.type === 'goal') {
+    render();
+    document.getElementById('log-bar').innerHTML = "🎈 <b>帰還気球に到着！</b> 持ち帰った特産品を精算して遠征を完了しよう！";
+    openGoalModal();
+    return;
+  }
+  if (cell.type === 'port' || cell.type === 'village') {
+    render();
+    document.getElementById('log-bar').innerText = `💬 ${TERRAINS[cell.type].name}に到着した（連続${actualRoute.steps}マス、割引 -${actualRoute.discount}）。`;
+    openTrade();
+    return;
+  }
+  render();
+  document.getElementById('log-bar').innerText = `💬 目的地に到着した（連続${actualRoute.steps}マス、SAN -${actualRoute.cost} / 割引 -${actualRoute.discount}）。`;
+}
+
 function handleLocationAction() {
   let curType = state.grid[state.py][state.px].type;
   if (curType === 'goal') openGoalModal();
@@ -372,23 +510,18 @@ canvas.addEventListener('click', (e) => {
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       let { x, y } = hexCenter(c, r);
-      if (Math.hypot(mx - x, my - y) < HEX_R * 0.9 && isAdjacent(state.px, state.py, c, r)) {
-        state.px = c; state.py = r;
-        let cell = state.grid[r][c];
-        let t = TERRAINS[cell.type];
-        state.san = Math.max(0, state.san - t.cost);
-        updateVision(); render();
-
-        let log = document.getElementById('log-bar');
-        if (state.san <= 0) {
-          log.innerHTML = "💀 <b style='color:#e63946'>正気度(SAN)が尽き、調査隊は未開の密林へ消えた… (F5で最初から再挑戦)</b>";
-        } else if (cell.type === 'goal') {
-          log.innerHTML = "🎈 <b>帰還気球に到着！</b> 持ち帰った特産品を精算して遠征を完了しよう！";
-          openGoalModal();
-        } else if (cell.type === 'port' || cell.type === 'village') {
-          openTrade();
+      if (Math.hypot(mx - x, my - y) < HEX_R * 0.9 && c === state.px && r === state.py) return;
+      if (Math.hypot(mx - x, my - y) < HEX_R * 0.9 && state.grid[r][c].visited) {
+        let route = findShortestPath(c, r);
+        if (!route) return;
+        if (pointMatchesDestination(c, r)) {
+          moveAlongRoute(route.path, route.cost);
         } else {
-          log.innerText = `💬 ${t.name}を踏破した（SAN値 -${t.cost}）。残りSANに注意して進もう！`;
+          state.selectedDestination = { c, r };
+          state.routePath = route.path;
+          state.routeCost = route.cost;
+          render();
+          document.getElementById('log-bar').innerText = `💬 目的地を選択：必要SAN -${route.cost}（連続${route.steps}マス、割引 -${route.discount}）。もう一度クリックで移動。`;
         }
         return;
       }
@@ -423,7 +556,8 @@ function openTrade() {
         <div>
           <button onclick="buyItem(${idx}, ${info.price})" ${(!info.canBuy || state.cash < info.price) ? 'disabled' : ''}>買う</button>
           <button onclick="buyMax(${idx}, ${info.price})" ${(!info.canBuy || state.cash < info.price) ? 'disabled' : ''}>全力買い</button>
-          <button onclick="sellItem(${idx}, ${info.price})" ${it.owned <= 0 ? 'disabled' : ''}>すべて売る</button>
+          <button onclick="sellItem(${idx}, ${info.price})" ${it.owned <= 0 ? 'disabled' : ''}>1個売る</button>
+          <button onclick="sellAll(${idx}, ${info.price})" ${it.owned <= 0 ? 'disabled' : ''}>すべて売る</button>
         </div>
       </div>`;
   });
@@ -434,7 +568,27 @@ function openTrade() {
 function closeModal(id) { document.getElementById(id).style.display = 'none'; render(); }
 function buyItem(idx, price) { if (state.cash >= price) { state.cash -= price; ITEMS[idx].owned++; ITEMS[idx].costSum += price; openTrade(); render(); } }
 function buyMax(idx, price) { let n = Math.floor(state.cash / price); if (n > 0) { state.cash -= price * n; ITEMS[idx].owned += n; ITEMS[idx].costSum += price * n; openTrade(); render(); } }
-function sellItem(idx, price) { if (ITEMS[idx].owned > 0) { state.cash += price * ITEMS[idx].owned; ITEMS[idx].owned = 0; ITEMS[idx].costSum = 0; openTrade(); render(); } }
+function sellItem(idx, price) {
+  let item = ITEMS[idx];
+  if (item.owned > 0) {
+    let unitCost = item.costSum / item.owned;
+    state.cash += price;
+    item.owned--;
+    item.costSum = Math.max(0, item.costSum - unitCost);
+    openTrade();
+    render();
+  }
+}
+function sellAll(idx, price) {
+  let item = ITEMS[idx];
+  if (item.owned > 0) {
+    state.cash += price * item.owned;
+    item.owned = 0;
+    item.costSum = 0;
+    openTrade();
+    render();
+  }
+}
 function restSan() { if (state.cash >= 60 && state.san < state.maxSan) { state.cash -= 60; state.san = state.maxSan; openTrade(); render(); } }
 
 generateIsland(); render(); openTrade();
