@@ -12,10 +12,32 @@
   }
   #hud {
     width: 980px; background: #2c2623; padding: 10px 18px;
-    border-bottom: 3px solid #8c7355; display: flex;
+    border-bottom: 1px solid #554838; display: flex;
     justify-content: space-between; align-items: center;
     box-sizing: border-box; margin-top: 10px; border-radius: 8px 8px 0 0;
   }
+  #inv-bar {
+    width: 980px; background: #231f1c; padding: 8px 18px;
+    border-bottom: 3px solid #8c7355; display: flex;
+    align-items: center; gap: 12px; box-sizing: border-box;
+  }
+  .inv-label { font-size: 13px; font-weight: bold; color: #d4a373; }
+  .inv-slots { display: flex; gap: 10px; flex: 1; }
+  .inv-slot {
+    background: #181512; border: 2px solid #554838; border-radius: 6px;
+    padding: 4px 10px; min-width: 190px; height: 32px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 13px; box-sizing: border-box;
+  }
+  .inv-slot.filled { border-color: #d4a373; background: #2b2520; }
+  .inv-slot.empty { color: #665e54; font-style: italic; justify-content: center; border-style: dashed; }
+  .slot-count { color: #ffba08; font-weight: bold; margin-left: 6px; }
+  .btn-discard {
+    background: #6a040f; color: #fff; border: none; padding: 2px 6px;
+    border-radius: 4px; font-size: 11px; cursor: pointer; margin-left: 8px;
+  }
+  .btn-discard:hover { background: #9d0208; }
+
   .stat { font-size: 14px; font-weight: bold; }
   .san-bar-bg {
     width: 100px; height: 14px; background: #444;
@@ -31,10 +53,11 @@
     width: 980px; background: #2c2623; padding: 10px 18px;
     box-sizing: border-box; border-top: 1px solid #554838;
     border-radius: 0 0 8px 8px; font-size: 14px; color: #e0d8c8;
+    min-height: 58px; line-height: 1.4;
   }
   .modal {
-    display: none; position: absolute; top: 20px; left: 140px;
-    width: 700px; background: #2b2520; border: 3px solid #d4a373;
+    display: none; position: absolute; top: 15px; left: 130px;
+    width: 720px; background: #2b2520; border: 3px solid #d4a373;
     border-radius: 8px; padding: 18px 24px; box-shadow: 0 12px 35px rgba(0,0,0,0.9);
     box-sizing: border-box;
   }
@@ -48,6 +71,7 @@
   .badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 6px; font-weight: bold; }
   .badge-cheap { background: #1d3557; color: #a8dadc; border: 1px solid #4ea8de; }
   .badge-high { background: #6a040f; color: #ffba08; border: 1px solid #e85d04; }
+  .badge-slot { background: #386641; color: #fff; }
   button {
     background: #8c7355; color: #fff; border: none; padding: 5px 12px;
     border-radius: 4px; cursor: pointer; font-weight: bold; margin-left: 4px; font-size: 13px;
@@ -72,14 +96,19 @@
     <div class="san-bar-bg"><div id="san-bar"></div></div>
   </div>
   <button id="ration-btn" class="btn-ration" onclick="useRation()">🍫 携帯食料を使う (残:0)</button>
-  <div class="stat" style="font-size:13px;" id="cargo-summary">📦 交易品: なし</div>
-  <button id="action-btn" class="btn-action" onclick="handleLocationAction()">⚓ 拠点を開く</button>
+  <button id="action-btn" class="btn-action" onclick="handleLocationAction()">⚓ 補給所を開く</button>
+</div>
+
+<div id="inv-bar">
+  <div class="inv-label">🎒 インベントリ (<span id="slot-used">0</span>/<span id="slot-max">3</span>枠):</div>
+  <div class="inv-slots" id="inv-slots-container"></div>
+  <div style="font-size:12px; color:#a89f91;">※同じアイテムは1枠に無限スタック可能</div>
 </div>
 
 <div id="game-container">
   <canvas id="mapCanvas" width="980" height="540"></canvas>
 
-  <!-- 交易ウィンドウ -->
+  <!-- 補給・交易ウィンドウ -->
   <div id="trade-modal" class="modal">
     <div class="modal-title" id="modal-title">交易ウィンドウ</div>
     <div class="modal-sub" id="modal-sub"></div>
@@ -103,19 +132,19 @@
   </div>
 </div>
 
-<div id="log-bar">💬 地形のSAN消費が倍増し、島が広大化した！🍫携帯食料と道中の集落(🏕️)を駆使して東端の気球(🎈)へ生き延びろ！</div>
+<div id="log-bar">💬 出発港(⚓)では携帯食料しか買えない！道中の「❓」で物資を拾い、集落(🏕️)を見つけて交易しよう！</div>
 
 <script>
 // ============================================================================
-// [MODULE 1] 定数・マスターデータ定義（広大マップ ＆ SAN消費2倍仕様）
+// [MODULE 1] 定数・マスターデータ定義
 // ============================================================================
 const COLS = 24, ROWS = 11, HEX_R = 24, HEX_W = Math.sqrt(3) * HEX_R;
 
 const TERRAINS = {
-  plain:    { name: "草原",       color: "#588157", icon: "",   cost: 4 },  // 旧2 -> 4
-  forest:   { name: "密林",       color: "#344e41", icon: "🌲", cost: 10 }, // 旧5 -> 10
-  swamp:    { name: "泥沼",       color: "#5c4d3c", icon: "🌿", cost: 18 }, // 旧9 -> 18
-  mountain: { name: "険しい山",   color: "#6c757d", icon: "⛰️", cost: 30 }, // 旧15 -> 30
+  plain:    { name: "草原",       color: "#588157", icon: "",   cost: 4 },
+  forest:   { name: "密林",       color: "#344e41", icon: "🌲", cost: 10 },
+  swamp:    { name: "泥沼",       color: "#5c4d3c", icon: "🌿", cost: 18 },
+  mountain: { name: "険しい山",   color: "#6c757d", icon: "⛰️", cost: 30 },
   port:     { name: "出発港",     color: "#1d3557", icon: "⚓", cost: 0 },
   village:  { name: "原住民集落", color: "#b56576", icon: "🏕️", cost: 0 },
   question: { name: "謎の地点",   color: "#7b2cbf", icon: "❓", cost: 4 },
@@ -123,25 +152,44 @@ const TERRAINS = {
 };
 
 const ITEMS = [
-  // サバイバル消耗品（フィールド上でいつでも使ってSAN+25回復できる）
-  { id: 'ration', name: "🍫 携帯食料(SAN+25)", type: 'supply', base: 40,  owned: 0, costSum: 0 },
-  // 文明の物資（港で買って、道中の集落で売る）
-  { id: 'med',    name: "💊 医療品",           type: 'city',   base: 50,  owned: 0, costSum: 0 },
-  { id: 'tool',   name: "⚒️ 鉄の農具",         type: 'city',   base: 120, owned: 0, costSum: 0 },
-  { id: 'cloth',  name: "🧶 絹織物",           type: 'city',   base: 260, owned: 0, costSum: 0 },
-  // 現地の特産品（集落で仕入れて、ゴールで超高額精算する！）
-  { id: 'spice',  name: "🌶️ 希少香辛料",       type: 'local',  base: 180, owned: 0, costSum: 0 },
-  { id: 'jade',   name: "💎 翠玉(翡翠)",       type: 'local',  base: 420, owned: 0, costSum: 0 },
-  { id: 'relic',  name: "🏺 古代の遺物",       type: 'local',  base: 900, owned: 0, costSum: 0 }
+  // type: 'supply' は出発港と集落の両方で表示・購入できる探検サバイバル品
+  { id: 'ration', name: "🍫 携帯食料",   type: 'supply', base: 40,  owned: 0, costSum: 0 },
+  // type: 'city' と 'local' は集落（🏕️）でのみ取引される交易品
+  { id: 'med',    name: "💊 医療品",     type: 'city',   base: 50,  owned: 0, costSum: 0 },
+  { id: 'tool',   name: "⚒️ 鉄の農具",   type: 'city',   base: 120, owned: 0, costSum: 0 },
+  { id: 'cloth',  name: "🧶 絹織物",     type: 'city',   base: 260, owned: 0, costSum: 0 },
+  { id: 'spice',  name: "🌶️ 希少香辛料", type: 'local',  base: 180, owned: 0, costSum: 0 },
+  { id: 'jade',   name: "💎 翠玉(翡翠)", type: 'local',  base: 420, owned: 0, costSum: 0 },
+  { id: 'relic',  name: "🏺 古代の遺物", type: 'local',  base: 900, owned: 0, costSum: 0 }
 ];
 
 // ============================================================================
-// [MODULE 2] ゲーム状態管理 ＆ ランダム島生成ロジック
+// [MODULE 2] ゲーム状態管理 ＆ インベントリスロット管理
 // ============================================================================
 let state = {
-  expNum: 1, cash: 500, san: 100, maxSan: 100, px: 1, py: 5, grid: [],
+  expNum: 1, cash: 500, san: 100, maxSan: 100, maxSlots: 3,
+  px: 1, py: 5, grid: [],
   selectedDestination: null, routePath: [], routeCost: 0
 };
+
+function getUsedSlots() {
+  return ITEMS.filter(i => i.owned > 0).length;
+}
+
+function canCarryItem(item) {
+  if (item.owned > 0) return true;
+  return getUsedSlots() < state.maxSlots;
+}
+
+function discardItem(itemId) {
+  let item = ITEMS.find(i => i.id === itemId);
+  if (!item || item.owned <= 0) return;
+  item.owned = 0;
+  item.costSum = 0;
+  document.getElementById('log-bar').innerText = `🗑️ ${item.name}をすべて破棄してインベントリの枠を空けた。`;
+  if (document.getElementById('trade-modal').style.display === 'block') openTrade();
+  render();
+}
 
 function generateIsland() {
   state.px = 1; state.py = 5; state.san = state.maxSan;
@@ -157,7 +205,6 @@ function generateIsland() {
   }
   state.grid[5][1].type = 'port';
 
-  // 村は1つだけ。中盤のどこかに現れるため、ゴールまでの道筋を毎回探す
   const vTemplates = [
     { cMin: 10, cMax: 16, name: "島の中央交易集落", specialty: 'jade', demand: 'tool' }
   ];
@@ -168,7 +215,6 @@ function generateIsland() {
     state.grid[r][c].villageData = { name: t.name, specialty: t.specialty, demand: t.demand };
   });
 
-  // 未踏の探索を促すハテナマス。港・村・ゴールとは重ならない場所に配置する
   const questionEvents = ['villageReveal', 'tradeItem', 'villageReveal', 'tradeItem', 'villageReveal', 'tradeItem'];
   questionEvents.forEach(eventType => {
     let c, r;
@@ -180,7 +226,6 @@ function generateIsland() {
     state.grid[r][c].eventType = eventType;
   });
 
-  // 最東端（22列目）にゴール（帰還気球）を配置
   let goalR = 1 + Math.floor(Math.random() * (ROWS - 2));
   state.grid[goalR][22].type = 'goal';
   state.grid[goalR][22].visited = true;
@@ -189,28 +234,27 @@ function generateIsland() {
 }
 
 // ============================================================================
-// [MODULE 3] 交易価格・サバイバル・精算ロジック（残SANボーナス＆ランク廃止）
+// [MODULE 3] 交易価格・サバイバル・精算ロジック
 // ============================================================================
 function getItemPriceInfo(item) {
   let cell = state.grid[state.py][state.px];
   if (item.type === 'supply') {
-    // 携帯食料は港なら$40、集落でも少し割高($55)で買える命綱
     let p = cell.type === 'port' ? item.base : 55;
     return { price: p, badge: '<span class="badge badge-cheap">移動中にSAN+25回復</span>', canBuy: true };
   }
+  // 港ではサバイバル品以外は購入不可（表示もされない）
   if (cell.type === 'port') {
-    if (item.type === 'city') return { price: item.base, badge: '<span class="badge badge-cheap">出発港の定価</span>', canBuy: true };
     return { price: item.base, badge: '', canBuy: false };
   }
   if (cell.type === 'village') {
     let v = cell.villageData;
     let dist = Math.hypot(state.px - 1, state.py - 5);
-    let distMult = 1.15 + dist * 0.09; // 距離ボーナス
+    let distMult = 1.15 + dist * 0.09;
     if (item.type === 'city') {
       if (v.demand === item.id) {
         return { price: Math.round(item.base * distMult * 1.6), badge: '<span class="badge badge-high">🔥集落で大需要!(超高値)</span>', canBuy: false };
       }
-      return { price: Math.round(item.base * distMult), badge: '<span class="badge badge-high">距離ボーナス価格</span>', canBuy: true };
+      return { price: Math.round(item.base * distMult), badge: '<span class="badge badge-high">集落の取引価格</span>', canBuy: true };
     } else {
       if (v.specialty === item.id) {
         return { price: Math.round(item.base * 0.65), badge: '<span class="badge badge-cheap">✨現地の名産品!(激安仕入)</span>', canBuy: true };
@@ -355,9 +399,9 @@ function getRouteCost(path) {
 
 function triggerQuestionEvent(cell) {
   if (cell.questionUsed) return "❓ ここにはもう何も残っていない。";
-  cell.questionUsed = true;
 
   if (cell.eventType === 'villageReveal') {
+    cell.questionUsed = true;
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         if (state.grid[r][c].type === 'village') state.grid[r][c].visited = true;
@@ -368,6 +412,12 @@ function triggerQuestionEvent(cell) {
 
   let tradeItems = ITEMS.filter(item => item.type === 'city' || item.type === 'local');
   let item = tradeItems[Math.floor(Math.random() * tradeItems.length)];
+
+  if (!canCarryItem(item)) {
+    return `❓ ${item.name}を発見したが、インベントリ(${state.maxSlots}枠)が満杯で拾えなかった！（不要な枠を×で破棄しよう）`;
+  }
+
+  cell.questionUsed = true;
   item.owned++;
   return `❓ 遺された交易品を発見した！${item.name}を1個手に入れた。`;
 }
@@ -382,6 +432,28 @@ function drawHex(x, y, radius, fill, stroke, lineWidth = 2) {
   ctx.closePath();
   ctx.fillStyle = fill; ctx.fill();
   ctx.strokeStyle = stroke; ctx.lineWidth = lineWidth; ctx.stroke();
+}
+
+function renderInventoryBar() {
+  let heldItems = ITEMS.filter(i => i.owned > 0);
+  document.getElementById('slot-used').innerText = heldItems.length;
+  document.getElementById('slot-max').innerText = state.maxSlots;
+
+  let container = document.getElementById('inv-slots-container');
+  container.innerHTML = "";
+
+  for (let s = 0; s < state.maxSlots; s++) {
+    if (s < heldItems.length) {
+      let it = heldItems[s];
+      container.innerHTML += `
+        <div class="inv-slot filled">
+          <div><b>${it.name}</b> <span class="slot-count">x${it.owned}</span></div>
+          <button class="btn-discard" title="この枠のアイテムをすべて捨てて枠を空ける" onclick="discardItem('${it.id}')">×破棄</button>
+        </div>`;
+    } else {
+      container.innerHTML += `<div class="inv-slot empty">空きスロット</div>`;
+    }
+  }
 }
 
 function render() {
@@ -430,15 +502,16 @@ function render() {
   rBtn.innerText = `🍫 携帯食料を使う (残:${ration.owned})`;
   rBtn.disabled = (ration.owned <= 0 || state.san >= state.maxSan || state.san <= 0);
 
-  let ownedList = ITEMS.filter(i => i.type !== 'supply' && i.owned > 0).map(i => `${i.name.slice(0,2)}x${i.owned}`);
-  document.getElementById('cargo-summary').innerText = "📦 交易品: " + (ownedList.length ? ownedList.join(" ") : "なし");
+  renderInventoryBar();
 
   let curType = state.grid[state.py][state.px].type;
   let btn = document.getElementById('action-btn');
   if (curType === 'goal') {
     btn.disabled = false; btn.className = "btn-goal"; btn.innerText = "🎈 帰還・精算する";
-  } else if (curType === 'port' || curType === 'village') {
-    btn.disabled = false; btn.className = "btn-action"; btn.innerText = "⚓ 交易を開く";
+  } else if (curType === 'port') {
+    btn.disabled = false; btn.className = "btn-action"; btn.innerText = "⚓ 補給所を開く";
+  } else if (curType === 'village') {
+    btn.disabled = false; btn.className = "btn-action"; btn.innerText = "🏕️ 交易を開く";
   } else {
     btn.disabled = true; btn.className = "btn-action"; btn.innerText = "移動中...";
   }
@@ -473,24 +546,30 @@ function moveAlongRoute(path, cost) {
     document.getElementById('log-bar').innerHTML = "💀 <b style='color:#e63946'>正気度(SAN)が尽き、調査隊は未開の密林へ消えた… (F5で最初から再挑戦)</b>";
     return;
   }
+
+  let eventLogs = [];
   for (let point of traveledPath.slice(1)) {
     let passedCell = state.grid[point.r][point.c];
-    if (passedCell.type === 'question') triggerQuestionEvent(passedCell);
+    if (passedCell.type === 'question' && !passedCell.questionUsed) {
+      eventLogs.push(triggerQuestionEvent(passedCell));
+    }
   }
+  let eventHtml = eventLogs.length > 0 ? `<br><span style="color:#ffd166; font-weight:bold;">${eventLogs.join(" / ")}</span>` : "";
+
   if (cell.type === 'goal') {
     render();
-    document.getElementById('log-bar').innerHTML = "🎈 <b>帰還気球に到着！</b> 持ち帰った特産品を精算して遠征を完了しよう！";
+    document.getElementById('log-bar').innerHTML = `🎈 <b>帰還気球に到着！</b> 持ち帰った特産品を精算して遠征を完了しよう！${eventHtml}`;
     openGoalModal();
     return;
   }
   if (cell.type === 'port' || cell.type === 'village') {
     render();
-    document.getElementById('log-bar').innerText = `💬 ${TERRAINS[cell.type].name}に到着した（連続${actualRoute.steps}マス、割引 -${actualRoute.discount}）。`;
+    document.getElementById('log-bar').innerHTML = `💬 ${TERRAINS[cell.type].name}に到着した（連続${actualRoute.steps}マス、割引 -${actualRoute.discount}）。${eventHtml}`;
     openTrade();
     return;
   }
   render();
-  document.getElementById('log-bar').innerText = `💬 目的地に到着した（連続${actualRoute.steps}マス、SAN -${actualRoute.cost} / 割引 -${actualRoute.discount}）。`;
+  document.getElementById('log-bar').innerHTML = `💬 目的地に到着した（連続${actualRoute.steps}マス、SAN -${actualRoute.cost} / 割引 -${actualRoute.discount}）。${eventHtml}`;
 }
 
 function handleLocationAction() {
@@ -531,31 +610,43 @@ canvas.addEventListener('click', (e) => {
 
 function openTrade() {
   let cell = state.grid[state.py][state.px];
-  if (cell.type === 'port') {
-    document.getElementById('modal-title').innerText = "⚓ 出発港（サバイバル食料 ＆ 交易物資の仕入れ）";
-    document.getElementById('modal-sub').innerText = "地形のSAN減少が激しいため、🍫携帯食料を買っておかないと最初の集落に届く前に倒れます！";
+  let isPort = (cell.type === 'port');
+  let used = getUsedSlots();
+  let slotStatus = `【インベントリ: ${used} / ${state.maxSlots} 枠】`;
+
+  if (isPort) {
+    document.getElementById('modal-title').innerText = `⚓ 出発港の補給所 ${slotStatus}`;
+    document.getElementById('modal-sub').innerText = "ここでは探検用のサバイバル物資（携帯食料）のみ購入できます。交易品は道中の「❓」や集落で入手しましょう！";
   } else {
     let v = cell.villageData;
     let spName = ITEMS.find(i => i.id === v.specialty).name;
     let dmName = ITEMS.find(i => i.id === v.demand).name;
-    document.getElementById('modal-title').innerText = `🏕️ ${v.name}`;
+    document.getElementById('modal-title').innerText = `🏕️ ${v.name} ${slotStatus}`;
     document.getElementById('modal-sub').innerHTML = `名産品: <b>${spName}</b>（激安仕入） ／ 大需要: <b>${dmName}</b>（高額買取）`;
   }
 
   let list = document.getElementById('trade-list');
   list.innerHTML = `<div class="cat-header">【サバイバル物資】移動中にいつでも使ってSAN値を回復できる命綱</div>`;
+
   ITEMS.forEach((it, idx) => {
-    if (idx === 1) list.innerHTML += `<div class="cat-header">【文明の物資】港で仕入れ ➔ 道中の集落で売却して資金を作る</div>`;
-    if (idx === 4) list.innerHTML += `<div class="cat-header">【現地の特産品】集落で仕入れ ➔ 東端の帰還気球(🎈)で x2.5倍 精算！</div>`;
+    // 港にいる時はサバイバル物資（supply）以外のアイテム行をすべてスキップして非表示にする！
+    if (isPort && it.type !== 'supply') return;
+
+    if (!isPort && idx === 1) list.innerHTML += `<div class="cat-header">【文明の物資】道中で拾うか集落間で売買して資金を作る</div>`;
+    if (!isPort && idx === 4) list.innerHTML += `<div class="cat-header">【現地の特産品】集落で仕入れ ➔ 東端の帰還気球(🎈)で x2.5倍 精算！</div>`;
+
     let info = getItemPriceInfo(it);
     let avg = it.owned > 0 ? `(取得:$${Math.round(it.costSum / it.owned)})` : "";
+    let slotAllowed = canCarryItem(it);
+    let slotTag = it.owned > 0 ? '<span class="badge badge-slot">スタック中</span>' : (!slotAllowed ? '<span class="badge" style="background:#555;color:#ccc;">枠満杯</span>' : '');
+
     list.innerHTML += `
       <div class="trade-row">
-        <div><b>${it.name}</b> ${info.badge}</div>
+        <div><b>${it.name}</b> ${info.badge} ${slotTag}</div>
         <div>価格: <b style="color:#e9c46a">$${info.price}</b> | 所持: <b>${it.owned}</b>個 <span style="font-size:12px;color:#aaa;">${avg}</span></div>
         <div>
-          <button onclick="buyItem(${idx}, ${info.price})" ${(!info.canBuy || state.cash < info.price) ? 'disabled' : ''}>買う</button>
-          <button onclick="buyMax(${idx}, ${info.price})" ${(!info.canBuy || state.cash < info.price) ? 'disabled' : ''}>全力買い</button>
+          <button onclick="buyItem(${idx}, ${info.price})" ${(!info.canBuy || state.cash < info.price || !slotAllowed) ? 'disabled' : ''}>買う</button>
+          <button onclick="buyMax(${idx}, ${info.price})" ${(!info.canBuy || state.cash < info.price || !slotAllowed) ? 'disabled' : ''}>全力買い</button>
           <button onclick="sellItem(${idx}, ${info.price})" ${it.owned <= 0 ? 'disabled' : ''}>1個売る</button>
           <button onclick="sellAll(${idx}, ${info.price})" ${it.owned <= 0 ? 'disabled' : ''}>すべて売る</button>
         </div>
@@ -566,8 +657,19 @@ function openTrade() {
 }
 
 function closeModal(id) { document.getElementById(id).style.display = 'none'; render(); }
-function buyItem(idx, price) { if (state.cash >= price) { state.cash -= price; ITEMS[idx].owned++; ITEMS[idx].costSum += price; openTrade(); render(); } }
-function buyMax(idx, price) { let n = Math.floor(state.cash / price); if (n > 0) { state.cash -= price * n; ITEMS[idx].owned += n; ITEMS[idx].costSum += price * n; openTrade(); render(); } }
+function buyItem(idx, price) {
+  let item = ITEMS[idx];
+  if (state.cash >= price && canCarryItem(item)) {
+    state.cash -= price; item.owned++; item.costSum += price; openTrade(); render();
+  }
+}
+function buyMax(idx, price) {
+  let item = ITEMS[idx];
+  let n = Math.floor(state.cash / price);
+  if (n > 0 && canCarryItem(item)) {
+    state.cash -= price * n; item.owned += n; item.costSum += price * n; openTrade(); render();
+  }
+}
 function sellItem(idx, price) {
   let item = ITEMS[idx];
   if (item.owned > 0) {
