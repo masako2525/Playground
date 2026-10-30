@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Pioneer Expedition - 善良なる開拓交易</title>
+<style>
+  body {
+    margin: 0; background: #1e1b18; color: #f4f1ea;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    user-select: none;
+  }
+  #hud {
+    width: 820px; background: #2c2623; padding: 12px 20px;
+    border-bottom: 3px solid #8c7355; display: flex;
+    justify-content: space-between; align-items: center;
+    box-sizing: border-box; margin-top: 10px; border-radius: 8px 8px 0 0;
+  }
+  .stat { font-size: 18px; font-weight: bold; }
+  .san-bar-bg {
+    width: 150px; height: 16px; background: #444;
+    display: inline-block; vertical-align: middle; border-radius: 8px; overflow: hidden;
+  }
+  #san-bar { height: 100%; background: #4ea8de; width: 100%; transition: 0.2s; }
+  #game-container { position: relative; width: 820px; height: 520px; }
+  canvas {
+    background: #141210; border: 2px solid #8c7355;
+    cursor: pointer; display: block;
+  }
+  #log-bar {
+    width: 820px; background: #2c2623; padding: 10px 20px;
+    box-sizing: border-box; border-top: 1px solid #554838;
+    border-radius: 0 0 8px 8px; font-size: 15px; color: #e0d8c8;
+  }
+  /* 交易モーダルウィンドウ */
+  #trade-modal {
+    display: none; position: absolute; top: 40px; left: 110px;
+    width: 600px; background: #2b2520; border: 3px solid #d4a373;
+    border-radius: 8px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+  }
+  .modal-title { font-size: 20px; font-weight: bold; color: #faedcd; margin-bottom: 10px; border-bottom: 1px solid #665; padding-bottom: 8px; }
+  .trade-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 0; border-bottom: 1px solid #3d352e;
+  }
+  button {
+    background: #8c7355; color: #fff; border: none; padding: 6px 14px;
+    border-radius: 4px; cursor: pointer; font-weight: bold; margin-left: 5px;
+  }
+  button:hover { background: #b59874; }
+  button:disabled { background: #444; color: #777; cursor: not-allowed; }
+  .btn-action { background: #386641; padding: 10px 18px; font-size: 15px; }
+  .btn-action:hover { background: #6a994e; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div class="stat">💰 所持金: $<span id="cash-val">500</span></div>
+  <div class="stat">
+    🧠 正気度(SAN): <span id="san-val">100</span>/100
+    <div class="san-bar-bg"><div id="san-bar"></div></div>
+  </div>
+  <div class="stat" style="font-size:14px;">
+    📦 積荷: 医療品(<span id="c-med">0</span>) / 農具(<span id="c-tool">0</span>) / 嗜好品(<span id="c-lux">0</span>)
+  </div>
+  <button id="trade-btn" class="btn-action" onclick="openTrade()" disabled>⚓ 交易を開く</button>
+</div>
+
+<div id="game-container">
+  <canvas id="mapCanvas" width="820" height="520"></canvas>
+
+  <!-- 交易ウィンドウ -->
+  <div id="trade-modal">
+    <div class="modal-title" id="modal-title">交易ウィンドウ</div>
+    <div id="trade-list"></div>
+    <div style="margin-top: 15px; display: flex; justify-content: space-between;">
+      <button onclick="restSan()" id="rest-btn">⛺ 宿・野営で休む ($50でSAN全快)</button>
+      <button class="btn-action" onclick="closeTrade()">出発する (閉じる)</button>
+    </div>
+  </div>
+</div>
+
+<div id="log-bar">💬 隣接するヘックス（六角形）をクリックして移動しよう！港(⚓)で仕入れて奥地の集落(🏕️)へ！</div>
+
+<script>
+const canvas = document.getElementById('mapCanvas');
+const ctx = canvas.getContext('2d');
+
+// ヘックスグリッド設定
+const COLS = 15, ROWS = 9;
+const HEX_R = 31; // 六角形の半径
+const HEX_W = Math.sqrt(3) * HEX_R;
+const HEX_H = 2 * HEX_R;
+
+const TERRAINS = {
+  plain:    { name: "草原",     color: "#588157", icon: "",   cost: 2 },
+  forest:   { name: "密林",     color: "#344e41", icon: "🌲", cost: 5 },
+  swamp:    { name: "泥沼",     color: "#5c4d3c", icon: "🌿", cost: 9 },
+  mountain: { name: "険しい山", color: "#6c757d", icon: "⛰️", cost: 15 },
+  port:     { name: "開拓港",   color: "#1d3557", icon: "⚓", cost: 0 },
+  village:  { name: "集落",     color: "#b56576", icon: "🏕️", cost: 0 }
+};
+
+const ITEMS = [
+  { id: 'med',  name: "医療品",   base: 50,  owned: 0 },
+  { id: 'tool', name: "鉄の農具", base: 120, owned: 0 },
+  { id: 'lux',  name: "嗜好品",   base: 300, owned: 0 }
+];
+
+let cash = 500, san = 100, maxSan = 100;
+let px = 1, py = 4; // プレイヤー初期位置
+let grid = [];
+
+// マップ初期化
+for (let r = 0; r < ROWS; r++) {
+  grid[r] = [];
+  for (let c = 0; c < COLS; c++) {
+    let rand = Math.random();
+    let type = rand < 0.48 ? 'plain' : (rand < 0.75 ? 'forest' : (rand < 0.9 ? 'swamp' : 'mountain'));
+    grid[r][c] = { type: type, visited: false };
+  }
+}
+grid[4][1].type = 'port';
+[[5,2], [6,6], [10,2], [11,7], [13,4]].forEach(([c, r]) => grid[r][c].type = 'village');
+
+// ヘックスの中心ピクセル座標を計算（奇数列を下にずらすOffset座標系）
+function hexCenter(c, r) {
+  let x = 50 + c * (HEX_R * 1.5);
+  let y = 48 + r * HEX_W + (c % 2 === 1 ? HEX_W / 2 : 0);
+  return { x, y };
+}
+
+// 2つのヘックスが隣接しているか判定（距離1の判定）
+function isAdjacent(c1, r1, c2, r2) {
+  if (c1 === c2 && r1 === r2) return false;
+  let p1 = hexCenter(c1, r1), p2 = hexCenter(c2, r2);
+  let dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+  return dist < HEX_W * 1.15;
+}
+
+// 視界を開く
+function updateVision() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let p1 = hexCenter(px, py), p2 = hexCenter(c, r);
+      if (Math.hypot(p1.x - p2.x, p1.y - p2.y) <= HEX_W * 2.2) {
+        grid[r][c].visited = true;
+      }
+    }
+  }
+}
+
+// 六角形を1つ描画
+function drawHex(x, y, radius, fill, stroke, lineWidth = 2) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    let angle = Math.PI / 3 * i;
+    let hx = x + radius * Math.cos(angle);
+    let hy = y + radius * Math.sin(angle);
+    if (i === 0) ctx.moveTo(hx, hy);
+    else ctx.lineTo(hx, hy);
+  }
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = lineWidth;
+  ctx.stroke();
+}
+
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let { x, y } = hexCenter(c, r);
+      let cell = grid[r][c];
+      let adj = isAdjacent(px, py, c, r);
+
+      if (!cell.visited) {
+        drawHex(x, y, HEX_R - 1, "#22201e", "#33302c", 1);
+        ctx.font = "14px sans-serif";
+        ctx.fillStyle = "#555";
+        ctx.fillText("☁️", x, y);
+        continue;
+      }
+
+      let t = TERRAINS[cell.type];
+      // 隣接マスは枠線を明るくして「移動可能」だと分かりやすくする
+      let strokeColor = adj ? "#e9c46a" : "#1e1b18";
+      let lw = adj ? 3 : 2;
+      drawHex(x, y, HEX_R - 1, t.color, strokeColor, lw);
+
+      if (t.icon) {
+        ctx.font = "22px sans-serif";
+        ctx.fillText(t.icon, x, y - 3);
+      }
+      // 消費SAN値の表示
+      if (t.cost > 0 && adj) {
+        ctx.font = "bold 11px sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.fillText(`-${t.cost}`, x, y + 16);
+      }
+    }
+  }
+
+  // プレイヤー描画
+  let pPos = hexCenter(px, py);
+  ctx.font = "26px sans-serif";
+  ctx.fillText("🤠", pPos.x, pPos.y - 2);
+
+  // UI更新
+  document.getElementById('cash-val').innerText = cash;
+  document.getElementById('san-val').innerText = san;
+  document.getElementById('san-bar').style.width = `${Math.max(0, san)}%`;
+  document.getElementById('san-bar').style.background = san > 30 ? "#4ea8de" : "#e63946";
+  document.getElementById('c-med').innerText = ITEMS[0].owned;
+  document.getElementById('c-tool').innerText = ITEMS[1].owned;
+  document.getElementById('c-lux').innerText = ITEMS[2].owned;
+
+  let curType = grid[py][px].type;
+  let btn = document.getElementById('trade-btn');
+  btn.disabled = !(curType === 'port' || curType === 'village');
+}
+
+// クリックで移動
+canvas.addEventListener('click', (e) => {
+  if (san <= 0) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let { x, y } = hexCenter(c, r);
+      if (Math.hypot(mx - x, my - y) < HEX_R * 0.85) {
+        if (isAdjacent(px, py, c, r)) {
+          px = c; py = r;
+          let t = TERRAINS[grid[r][c].type];
+          san = Math.max(0, san - t.cost);
+          updateVision();
+          render();
+
+          let log = document.getElementById('log-bar');
+          if (san <= 0) {
+            log.innerHTML = "💀 <b style='color:#e63946'>正気度(SAN)が尽き、調査隊は未開の密林へ消えた… (GAME OVER - F5で再挑戦)</b>";
+          } else if (grid[r][c].type === 'port' || grid[r][c].type === 'village') {
+            log.innerHTML = `✨ <b>${t.name}</b>に到着した！右上の「交易を開く」ボタンか、そのままウィンドウで取引しよう。`;
+            openTrade();
+          } else {
+            log.innerText = `💬 ${t.name}を踏破した（SAN値 -${t.cost}）。`;
+          }
+        }
+        return;
+      }
+    }
+  }
+});
+
+// 交易システム
+function getMultiplier() {
+  if (grid[py][px].type === 'port') return 1.0;
+  let dist = Math.hypot(px - 1, py - 4);
+  return +(1.1 + dist * 0.15).toFixed(2);
+}
+
+function openTrade() {
+  let type = grid[py][px].type;
+  let mult = getMultiplier();
+  document.getElementById('modal-title').innerText =
+    type === 'port' ? "⚓ 開拓港（定価での仕入れ・補給）" : `🏕️ 奥地の集落（開拓港からの距離ボーナス: 買取 x${mult}倍！）`;
+
+  let list = document.getElementById('trade-list');
+  list.innerHTML = "";
+  ITEMS.forEach((it, idx) => {
+    let price = Math.round(it.base * mult);
+    list.innerHTML += `
+      <div class="trade-row">
+        <div><b>${it.name}</b> <span style="color:#aaa;font-size:13px;">(基準:$${it.base})</span></div>
+        <div>現在価格: <b style="color:#e9c46a">$${price}</b> | 所持: <b>${it.owned}</b>個</div>
+        <div>
+          <button onclick="buyItem(${idx}, ${price})" ${cash < price ? 'disabled' : ''}>買う</button>
+          <button onclick="buyMax(${idx}, ${price})" ${cash < price ? 'disabled' : ''}>全力買い</button>
+          <button onclick="sellItem(${idx}, ${price})" ${it.owned <= 0 ? 'disabled' : ''}>すべて売る</button>
+        </div>
+      </div>`;
+  });
+  document.getElementById('rest-btn').disabled = (cash < 50 || san >= maxSan);
+  document.getElementById('trade-modal').style.display = 'block';
+}
+
+function closeTrade() { document.getElementById('trade-modal').style.display = 'none'; render(); }
+function buyItem(idx, price) { if (cash >= price) { cash -= price; ITEMS[idx].owned++; openTrade(); render(); } }
+function buyMax(idx, price) { let n = Math.floor(cash / price); if (n > 0) { cash -= price * n; ITEMS[idx].owned += n; openTrade(); render(); } }
+function sellItem(idx, price) { if (ITEMS[idx].owned > 0) { cash += price * ITEMS[idx].owned; ITEMS[idx].owned = 0; openTrade(); render(); } }
+function restSan() { if (cash >= 50 && san < maxSan) { cash -= 50; san = maxSan; openTrade(); render(); } }
+
+updateVision();
+render();
+openTrade(); // 初期状態は港でスタート
+</script>
+</body>
+</html>
