@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <title>Pioneer Expedition - 過酷なる大遠征</title>
 <style>
+  <!-- ポート起動文：cd /workspaces/Playground
+    python3 -m http.server 8000 -->
   body {
     margin: 0; background: #1e1b18; color: #f4f1ea;
     font-family: 'Helvetica Neue', Arial, sans-serif;
@@ -154,10 +156,7 @@ const TERRAINS = {
 const ITEMS = [
   // type: 'supply' は出発港と集落の両方で表示・購入できる探検サバイバル品
   { id: 'ration', name: "🍫 携帯食料",   type: 'supply', base: 40,  owned: 0, costSum: 0 },
-  // type: 'city' と 'local' は集落（🏕️）でのみ取引される交易品
-  { id: 'med',    name: "💊 医療品",     type: 'city',   base: 50,  owned: 0, costSum: 0 },
-  { id: 'tool',   name: "⚒️ 鉄の農具",   type: 'city',   base: 120, owned: 0, costSum: 0 },
-  { id: 'cloth',  name: "🧶 絹織物",     type: 'city',   base: 260, owned: 0, costSum: 0 },
+  // type: 'local' は集落（🏕️）でのみ取引される現地の特産品
   { id: 'spice',  name: "🌶️ 希少香辛料", type: 'local',  base: 180, owned: 0, costSum: 0 },
   { id: 'jade',   name: "💎 翠玉(翡翠)", type: 'local',  base: 420, owned: 0, costSum: 0 },
   { id: 'relic',  name: "🏺 古代の遺物", type: 'local',  base: 900, owned: 0, costSum: 0 }
@@ -206,13 +205,13 @@ function generateIsland() {
   state.grid[5][1].type = 'port';
 
   const vTemplates = [
-    { cMin: 10, cMax: 16, name: "島の中央交易集落", specialty: 'jade', demand: 'tool' }
+    { cMin: 10, cMax: 16, name: "島の中央交易集落", specialty: 'jade' }
   ];
   vTemplates.forEach(t => {
     let c = t.cMin + Math.floor(Math.random() * (t.cMax - t.cMin + 1));
     let r = 1 + Math.floor(Math.random() * (ROWS - 2));
     state.grid[r][c].type = 'village';
-    state.grid[r][c].villageData = { name: t.name, specialty: t.specialty, demand: t.demand };
+    state.grid[r][c].villageData = { name: t.name, specialty: t.specialty };
   });
 
   const questionEvents = ['villageReveal', 'tradeItem', 'villageReveal', 'tradeItem', 'villageReveal', 'tradeItem'];
@@ -248,19 +247,10 @@ function getItemPriceInfo(item) {
   }
   if (cell.type === 'village') {
     let v = cell.villageData;
-    let dist = Math.hypot(state.px - 1, state.py - 5);
-    let distMult = 1.15 + dist * 0.09;
-    if (item.type === 'city') {
-      if (v.demand === item.id) {
-        return { price: Math.round(item.base * distMult * 1.6), badge: '<span class="badge badge-high">🔥集落で大需要!(超高値)</span>', canBuy: false };
-      }
-      return { price: Math.round(item.base * distMult), badge: '<span class="badge badge-high">集落の取引価格</span>', canBuy: true };
-    } else {
-      if (v.specialty === item.id) {
-        return { price: Math.round(item.base * 0.65), badge: '<span class="badge badge-cheap">✨現地の名産品!(激安仕入)</span>', canBuy: true };
-      }
-      return { price: Math.round(item.base * 1.2), badge: '<span class="badge badge-high">他部族の特産品</span>', canBuy: false };
+    if (v.specialty === item.id) {
+      return { price: Math.round(item.base * 0.65), badge: '<span class="badge badge-cheap">✨現地の名産品!(激安仕入)</span>', canBuy: true };
     }
+    return { price: Math.round(item.base * 1.2), badge: '<span class="badge badge-high">他部族の特産品</span>', canBuy: false };
   }
   return { price: item.base, badge: '', canBuy: false };
 }
@@ -410,7 +400,7 @@ function triggerQuestionEvent(cell) {
     return "❓ 古い地図を発見した！🏕️ 村の位置がマップに記された。";
   }
 
-  let tradeItems = ITEMS.filter(item => item.type === 'city' || item.type === 'local');
+  let tradeItems = ITEMS.filter(item => item.type === 'local');
   let item = tradeItems[Math.floor(Math.random() * tradeItems.length)];
 
   if (!canCarryItem(item)) {
@@ -620,9 +610,8 @@ function openTrade() {
   } else {
     let v = cell.villageData;
     let spName = ITEMS.find(i => i.id === v.specialty).name;
-    let dmName = ITEMS.find(i => i.id === v.demand).name;
     document.getElementById('modal-title').innerText = `🏕️ ${v.name} ${slotStatus}`;
-    document.getElementById('modal-sub').innerHTML = `名産品: <b>${spName}</b>（激安仕入） ／ 大需要: <b>${dmName}</b>（高額買取）`;
+    document.getElementById('modal-sub').innerHTML = `名産品: <b>${spName}</b>（激安仕入）`;
   }
 
   let list = document.getElementById('trade-list');
@@ -632,8 +621,9 @@ function openTrade() {
     // 港にいる時はサバイバル物資（supply）以外のアイテム行をすべてスキップして非表示にする！
     if (isPort && it.type !== 'supply') return;
 
-    if (!isPort && idx === 1) list.innerHTML += `<div class="cat-header">【文明の物資】道中で拾うか集落間で売買して資金を作る</div>`;
-    if (!isPort && idx === 4) list.innerHTML += `<div class="cat-header">【現地の特産品】集落で仕入れ ➔ 東端の帰還気球(🎈)で x2.5倍 精算！</div>`;
+    if (!isPort && it.type === 'local' && !list.innerHTML.includes('現地の特産品')) {
+      list.innerHTML += `<div class="cat-header">【現地の特産品】集落で仕入れ ➔ 東端の帰還気球(🎈)で x2.5倍 精算！</div>`;
+    }
 
     let info = getItemPriceInfo(it);
     let avg = it.owned > 0 ? `(取得:$${Math.round(it.costSum / it.owned)})` : "";
